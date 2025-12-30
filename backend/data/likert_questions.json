@@ -1,0 +1,33 @@
+[
+    {
+      "id": "mood",
+      "text": "How would you rate your overall mood today?",
+      "scale": "1=Very Low, 5=Very High",
+      "facet": "valence"
+    },
+    {
+      "id": "stress",
+      "text": "How stressed did you feel today?",
+      "scale": "1=Not at all, 5=Extremely",
+      "facet": "stress",
+      "reverse_score": true
+    },
+    {
+      "id": "energy",
+      "text": "How energetic did you feel today?",
+      "scale": "1=Very Low, 5=Very High",
+      "facet": "energy"
+    },
+    {
+      "id": "connection",
+      "text": "How connected did you feel to others today?",
+      "scale": "1=Not at all, 5=Very Connected",
+      "facet": "social"
+    },
+    {
+      "id": "motivation",
+      "text": "How motivated did you feel today?",
+      "scale": "1=Not at all, 5=Extremely",
+      "facet": "motivation"
+    }
+  ]

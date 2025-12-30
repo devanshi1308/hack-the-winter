@@ -1,0 +1,105 @@
+{
+    "emergency": {
+      "title": "Emergency Services",
+      "resources": [
+        {
+          "name": "Emergency Services",
+          "phone": "911",
+          "description": "Immediate life-threatening emergencies",
+          "availability": "24/7"
+        }
+      ]
+    },
+    "crisis_hotlines": {
+      "title": "Crisis Support Hotlines",
+      "resources": [
+        {
+          "name": "988 Suicide & Crisis Lifeline",
+          "phone": "988",
+          "website": "https://988lifeline.org",
+          "description": "24/7 crisis support and suicide prevention",
+          "availability": "24/7",
+          "languages": ["English", "Spanish"]
+        },
+        {
+          "name": "Crisis Text Line",
+          "text": "HOME to 741741",
+          "website": "https://crisistextline.org",
+          "description": "24/7 crisis support via text message",
+          "availability": "24/7"
+        }
+      ]
+    },
+    "mental_health": {
+      "title": "Mental Health Support",
+      "resources": [
+        {
+          "name": "SAMHSA National Helpline",
+          "phone": "1-800-662-4357",
+          "website": "https://samhsa.gov",
+          "description": "Treatment referral and information service",
+          "availability": "24/7"
+        },
+        {
+          "name": "NAMI HelpLine",
+          "phone": "1-800-950-6264",
+          "website": "https://nami.org",
+          "description": "Mental health information and support",
+          "availability": "Mon-Fri 10am-10pm ET"
+        }
+      ]
+    },
+    "workplace": {
+      "title": "Workplace Support",
+      "resources": [
+        {
+          "name": "Employee Assistance Program (EAP)",
+          "description": "Check with HR for your company's EAP resources",
+          "note": "Many employers offer confidential counseling services"
+        },
+        {
+          "name": "Workplace Mental Health Resources",
+          "website": "https://workplacementalhealth.org",
+          "description": "Information and tools for workplace mental health"
+        }
+      ]
+    },
+    "online_support": {
+      "title": "Online Support Communities",
+      "resources": [
+        {
+          "name": "7 Cups",
+          "website": "https://7cups.com",
+          "description": "Free emotional support and online therapy"
+        },
+        {
+          "name": "BetterHelp",
+          "website": "https://betterhelp.com",
+          "description": "Professional online counseling services",
+          "note": "Paid service"
+        },
+        {
+          "name": "Mental Health America",
+          "website": "https://mhanational.org",
+          "description": "Mental health screening tools and resources"
+        }
+      ]
+    },
+    "self_care": {
+      "title": "Immediate Self-Care",
+      "resources": [
+        {
+          "name": "Grounding Techniques",
+          "description": "5-4-3-2-1 technique: Name 5 things you see, 4 you can touch, 3 you hear, 2 you smell, 1 you taste"
+        },
+        {
+          "name": "Breathing Exercise",
+          "description": "Box breathing: Inhale for 4, hold for 4, exhale for 4, hold for 4. Repeat."
+        },
+        {
+          "name": "Crisis Safety Plan",
+          "description": "Create a list of: warning signs, coping strategies, people to contact, safe environment steps"
+        }
+      ]
+    }
+  }

@@ -1,0 +1,18 @@
+embedding_model:
+  model_name: "models/text-embedding-004"
+
+llm:
+  openai:
+    provider: "openai"
+    model_name: "gpt-4o-mini"
+    temperature: 0.2
+    max_output_tokens: 2048
+  google:
+    provider: "google"
+    model_name: "gemini-2.0-flash-exp"
+    temperature: 0.2
+    max_output_tokens: 2048
+  groq:
+    provider: "groq"
+    model_name: "llama-3.1-8b-instant"
+    temperature: 0.2

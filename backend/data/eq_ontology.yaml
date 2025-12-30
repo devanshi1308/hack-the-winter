@@ -1,0 +1,79 @@
+# EQ Ontology for Agentic RAG Coaching
+# Five-facet emotional intelligence model with example tasks and metrics
+
+facets:
+  self_awareness:
+    description: "Recognizing and understanding one's own emotions, strengths, limitations, and values"
+    example_tasks:
+      - "Journal about emotional triggers you noticed this week"
+      - "Practice naming emotions as they arise throughout the day"
+      - "Reflect on a recent decision and the emotions that influenced it"
+    metrics:
+      - emotion_recognition_accuracy
+      - self_reflection_frequency
+      - insight_depth
+
+  self_regulation:
+    description: "Managing disruptive emotions and impulses; adapting to changing circumstances"
+    example_tasks:
+      - "Use 4-7-8 breathing when you notice stress building"
+      - "Pause 10 seconds before responding in difficult conversations"
+      - "Practice reframing negative thoughts into neutral observations"
+    metrics:
+      - stress_recovery_time
+      - impulse_control_score
+      - emotional_stability
+
+  motivation:
+    description: "Internal drive to achieve goals; resilience in face of setbacks"
+    example_tasks:
+      - "Set one small achievable goal for tomorrow"
+      - "List three reasons why your current project matters to you"
+      - "Celebrate a small win from this week, no matter how minor"
+    metrics:
+      - goal_progress_rate
+      - setback_recovery_count
+      - persistence_score
+
+  empathy:
+    description: "Understanding others' perspectives and emotions; showing compassion"
+    example_tasks:
+      - "Ask someone about their day and listen without offering advice"
+      - "Write down three things from another person's perspective"
+      - "Practice active listening: repeat back what you heard"
+    metrics:
+      - perspective_taking_frequency
+      - compassion_actions
+      - listening_quality
+
+  social_skills:
+    description: "Building rapport, managing relationships, navigating social complexity"
+    example_tasks:
+      - "Initiate a conversation with someone you don't know well"
+      - "Express appreciation to a colleague or friend"
+      - "Practice saying 'no' kindly when you need boundaries"
+    metrics:
+      - relationship_quality
+      - conflict_resolution_count
+      - communication_clarity
+
+# Citation guidelines
+citation_policy:
+  always_cite: true
+  min_citations_per_response: 1
+  include_fields:
+    - source_id
+    - url
+    - title
+    - relevant_span
+  fallback_when_no_sources: "Based on general EI principles"
+
+# Safety thresholds
+safety:
+  z_score_alert_threshold: 2.5
+  cooldown_hours: 24
+  escalation_keywords:
+    - "suicide"
+    - "kill myself"
+    - "end my life"
+    - "no point living"
