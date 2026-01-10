@@ -382,6 +382,34 @@ class ApiClient {
       return { label: 'SAFE', offline: true };
     }
   }
+
+  // Vision Analysis via Server-Side Gemini
+  async analyzeImage(imageInput: string, inputType: 'url' | 'base64' = 'url', task: 'emotion' | 'scene' | 'text' = 'emotion') {
+    try {
+      return await this.request('/api/vision/analyze', {
+        method: 'POST',
+        body: JSON.stringify({
+          image_input: imageInput,
+          input_type: inputType,
+          task,
+          provider: 'gemini'
+        }),
+      });
+    } catch (error) {
+      console.warn('Vision analysis failed, returning fallback:', error);
+      return {
+        labels: ['unknown'],
+        confidence: [0.5],
+        metadata: {
+          provider: 'gemini',
+          task,
+          fallback: true,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        },
+        offline: true
+      };
+    }
+  }
 }
 
 export const apiClient = new ApiClient();

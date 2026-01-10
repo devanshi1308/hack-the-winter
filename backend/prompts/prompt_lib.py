@@ -292,6 +292,39 @@ Generate 2-3 refined queries to explore this topic more deeply. Return JSON:
 """.strip()
 )
 
+# vision analysis prompts
+vision_emotion_analysis_prompt = ChatPromptTemplate.from_template(
+    """You are an emotion recognition expert. Analyze the emotional expressions and states visible in this image.
+Return STRICT JSON only with these keys:
+- labels: list of detected emotions (e.g., "happiness", "sadness", "anger", "neutral")
+- confidence: list of floats (0-1) corresponding to each emotion's confidence
+
+Detected emotions and their confidence scores:
+{image_context}
+""".strip()
+)
+
+vision_scene_analysis_prompt = ChatPromptTemplate.from_template(
+    """You are a scene understanding expert. Analyze this image and identify all visible objects, activities, and concepts.
+Return STRICT JSON only with these keys:
+- labels: list of detected objects and concepts (e.g., "person", "outdoor", "nature", "activity")
+- confidence: list of floats (0-1) for each label's confidence
+
+Scene analysis:
+{image_context}
+""".strip()
+)
+
+vision_text_recognition_prompt = ChatPromptTemplate.from_template(
+    """You are an OCR expert. Extract and recognize all visible text in this image.
+Return STRICT JSON only with these keys:
+- labels: list of strings (all recognized text)
+- confidence: list of floats (0-1) for each text's recognition confidence
+
+Recognized text:
+{image_context}
+""".strip()
+)
 
 PROMPT_REGISTRY = {
     "document_analysis": document_analysis_prompt,
@@ -308,6 +341,11 @@ PROMPT_REGISTRY = {
     "collab_rewrite": collab_rewrite_prompt,
     "collab_debrief": collab_debrief_prompt,
     "challenge_generator": challenge_generator_prompt,
+    
+    # Vision analysis prompts
+    "vision_emotion_analysis": vision_emotion_analysis_prompt,
+    "vision_scene_analysis": vision_scene_analysis_prompt,
+    "vision_text_recognition": vision_text_recognition_prompt,
     
     # Orchestrator & agentic prompts
     "system_coach": system_coach_prompt,

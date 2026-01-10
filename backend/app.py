@@ -23,6 +23,7 @@ from core.memory import MemoryManager
 from model.models import (
     BaselineRequest, BaselineResponse, BaselineScores,
     SafetyCheckRequest, SafetyCheckResponse, SafetyLabel,
+    ImageAnalysisRequest, ImageAnalysisResponse,
 )
 from db.mongo import get_mongo
 from logger.custom_logger import CustomLogger
@@ -651,6 +652,94 @@ async def safety_check(request: Request) -> SafetyCheckResponse:
     label = SafetyLabel(risk.get("label", "SAFE"))
     message = escalation_message() if label == SafetyLabel.ESCALATE else None
     return SafetyCheckResponse(label=label, message=message)
+
+@app.post("/api/vision/analyze")
+async def analyze_image(request: Request) -> ImageAnalysisResponse:
+    """
+    Analyze an image using vision AI.
+    
+    Request body:
+        image_input: str (URL or base64-encoded image)
+        input_type: str = "url" ("url" or "base64")
+        task: str = "emotion" ("emotion", "scene", or "text")
+        provider: str = "gemini" ("gemini" or "hf")
+    
+    Response:
+        labels: List[str] (detected concepts/emotions)
+        confidence: List[float] (corresponding confidence scores)
+        metadata: Dict[str, Any] (provider, timestamp, source)
+    
+    Example curl:
+        curl -X POST http://localhost:8000/api/vision/analyze \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "image_input": "https://example.com/image.jpg",
+            "input_type": "url",
+            "task": "emotion",
+            "provider": "gemini"
+          }'
+    """
+    _log = CustomLogger().get_logger(__name__)
+    
+    try:
+        payload = await request.json()
+    except Exception as e:
+        _log.error("Invalid JSON body", error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    try:
+        req = ImageAnalysisRequest(**payload)
+    except Exception as e:
+        _log.error("Invalid request schema", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+    
+    try:
+        # Basic validation for URL reachability if applicable
+        if req.input_type == "url":
+            try:
+                import requests as _req
+                r = _req.head(req.image_input, timeout=5, allow_redirects=True)
+                if r.status_code >= 400:
+                    raise HTTPException(status_code=400, detail="Image URL not reachable")
+            except HTTPException:
+                raise
+            except Exception:
+                # If HEAD fails, try GET small download to validate
+                try:
+                    r = _req.get(req.image_input, timeout=8, stream=True)
+                    if r.status_code >= 400:
+                        raise HTTPException(status_code=400, detail="Image URL not reachable")
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Invalid or unreachable image URL")
+
+        loader = ModelLoader()
+        vision_provider = loader.load_vision_model(provider=req.provider)
+        result = vision_provider.analyze(
+            image_input=req.image_input,
+            input_type=req.input_type,
+            task=req.task
+        )
+        
+        # Add timestamp to metadata
+        from datetime import datetime
+        result["metadata"]["timestamp"] = datetime.utcnow().isoformat()
+        
+        _log.info("Vision analysis completed", task=req.task, provider=req.provider, labels_count=len(result.get("labels", [])))
+        return ImageAnalysisResponse(**result)
+    
+    except Exception as e:
+        _log.error("Vision analysis failed", error=str(e), task=req.task, provider=req.provider)
+        # Return fallback response
+        return ImageAnalysisResponse(
+            labels=["neutral"],
+            confidence=[0.5],
+            metadata={
+                "fallback": True,
+                "error": str(e),
+                "provider": req.provider,
+                "task": req.task
+            }
+        )
 
 # RAG ENDPOINTS
 @app.post("/rag/ingest")

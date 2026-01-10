@@ -37,3 +37,5 @@ beautifulsoup4
 trafilatura
 elevenlabs
 openai>=1.0.0
+google-generativeai
+Pillow

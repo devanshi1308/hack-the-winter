@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Literal
 
 from pydantic import BaseModel, RootModel, Field
 
@@ -147,3 +147,15 @@ class SafetyCheckRequest(BaseModel):
 class SafetyCheckResponse(BaseModel):
     label: SafetyLabel
     message: Optional[str] = None
+
+class ImageAnalysisRequest(BaseModel):
+    image_input: str
+    input_type: Literal["url", "base64"] = "url"
+    task: Literal["emotion", "scene", "text"] = "emotion"
+    provider: Literal["gemini"] = "gemini"
+
+
+class ImageAnalysisResponse(BaseModel):
+    labels: List[str]  # detected concepts/emotions
+    confidence: List[float]  # corresponding confidence scores
+    metadata: Dict[str, Any]  # source, timestamp, provider used
