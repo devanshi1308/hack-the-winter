@@ -6,9 +6,11 @@ Collections:
 - sessions: chat sessions with metadata and configuration
 - messages: conversation turns within sessions
 - documents: metadata for uploaded PDFs and RAG sources
+- crisis_events: crisis detection events with status tracking
 """
 
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pymongo import MongoClient, ASCENDING, DESCENDING
@@ -59,24 +61,134 @@ class MongoDB:
         self.users: Collection = self.db.users
         self.users.create_index("user_id", unique=True)
         self.users.create_index("email", unique=True, sparse=True)
-        
+
         # Sessions collection
         self.sessions: Collection = self.db.sessions
         self.sessions.create_index("session_id", unique=True)
         self.sessions.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
-        
+
         # Messages collection
         self.messages: Collection = self.db.messages
         self.messages.create_index([("session_id", ASCENDING), ("timestamp", ASCENDING)])
         self.messages.create_index("user_id")
-        
+
         # Documents collection (RAG sources)
         self.documents: Collection = self.db.documents
         self.documents.create_index("doc_id", unique=True)
         self.documents.create_index("user_id")
         self.documents.create_index([("uploaded_at", DESCENDING)])
-        
+
+        # Crisis events collection
+        self.crisis_events: Collection = self.db.crisis_events
+        self.crisis_events.create_index("event_id", unique=True)
+        self.crisis_events.create_index("user_id")
+        self.crisis_events.create_index("session_id")
+        self.crisis_events.create_index("status")
+        self.crisis_events.create_index([("timestamp", DESCENDING)])
+
         _LOG.info("MongoDB collections and indexes initialized")
+    
+    # ==================== CRISIS EVENT OPERATIONS ====================
+    
+    def add_crisis_event(self, event_data: Dict[str, Any]) -> str:
+        """
+        Add a crisis event to the crisis_events collection.
+        Args:
+            event_data: Dict with event fields (see CrisisEvent model)
+        Returns:
+            event_id (string)
+        """
+        try:
+            # Generate event_id if not provided
+            if "event_id" not in event_data or not event_data["event_id"]:
+                event_data["event_id"] = f"evt_{uuid.uuid4().hex[:12]}"
+            
+            # Set timestamps
+            event_data["timestamp"] = datetime.now(timezone.utc)
+            event_data.setdefault("status", "triggered")
+            event_data.setdefault("resolution_steps", [])
+            
+            result = self.crisis_events.insert_one(event_data)
+            _LOG.info("Crisis event created", event_id=event_data["event_id"], 
+                     user_id=event_data.get("user_id"), 
+                     risk_band=event_data.get("risk_band"))
+            return event_data["event_id"]
+        except DuplicateKeyError:
+            _LOG.warning("Crisis event already exists", event_id=event_data.get("event_id"))
+            raise ValueError(f"Crisis event {event_data.get('event_id')} already exists")
+        except Exception as e:
+            _LOG.error("Failed to add crisis event", error=str(e))
+            raise
+
+    def get_crisis_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve crisis event by event_id."""
+        return self.crisis_events.find_one({"event_id": event_id}, {"_id": 0})
+
+    def list_crisis_events(
+        self, 
+        user_id: Optional[str] = None, 
+        status: Optional[str] = None, 
+        risk_band: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        List crisis events, optionally filtered by user_id, status, and/or risk_band.
+        
+        Args:
+            user_id: Filter by user ID
+            status: Filter by status (triggered, acknowledged, resolved)
+            risk_band: Filter by risk_band (green, yellow, red)
+            limit: Maximum number of events to return
+        """
+        query = {}
+        if user_id:
+            query["user_id"] = user_id
+        if status:
+            query["status"] = status
+        if risk_band:
+            query["risk_band"] = risk_band
+            
+        cursor = self.crisis_events.find(query, {"_id": 0}).sort("timestamp", DESCENDING).limit(limit)
+        return list(cursor)
+
+    def update_crisis_event(self, event_id: str, updates: Dict[str, Any]) -> bool:
+        """
+        Update crisis event fields (e.g., status, resolution_steps).
+        
+        Args:
+            event_id: The event ID to update
+            updates: Dict of fields to update
+        """
+        updates["updated_at"] = datetime.now(timezone.utc)
+        result = self.crisis_events.update_one({"event_id": event_id}, {"$set": updates})
+        if result.modified_count > 0:
+            _LOG.info("Crisis event updated", event_id=event_id, updates=list(updates.keys()))
+        return result.modified_count > 0
+    
+    def add_resolution_step(self, event_id: str, step: str, actor: str = "system") -> bool:
+        """
+        Add a resolution step to a crisis event.
+        
+        Args:
+            event_id: The event ID
+            step: Description of the resolution step
+            actor: Who performed the step (system, user, admin, etc.)
+        """
+        resolution_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "step": step,
+            "actor": actor
+        }
+        result = self.crisis_events.update_one(
+            {"event_id": event_id},
+            {
+                "$push": {"resolution_steps": resolution_entry},
+                "$set": {"updated_at": datetime.now(timezone.utc)}
+            }
+        )
+        if result.modified_count > 0:
+            _LOG.info("Resolution step added", event_id=event_id, step=step)
+        return result.modified_count > 0
     
     # ==================== USER OPERATIONS ====================
     

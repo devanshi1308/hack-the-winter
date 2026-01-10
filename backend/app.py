@@ -10,7 +10,7 @@ import asyncio
 import io
 import uuid
 from dotenv import load_dotenv
-
+from model.models import CrisisEvent, CrisisEventStatus
 from utils.elevenlabs_client import get_elevenlabs
 from utils.model_loader import ModelLoader
 from prompts.prompt_lib import PROMPT_REGISTRY
@@ -27,6 +27,7 @@ from model.models import (
 )
 from db.mongo import get_mongo
 from logger.custom_logger import CustomLogger
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 # Load environment variables from .env (local dev)
 load_dotenv()
@@ -41,18 +42,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get API Keys from environment - OpenAI primary, Gemini fallback
+
+# Get API Keys from environment only (no API URLs)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or ""
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 # Conversation history per session
 conversation_history = {}
 
 async def call_llm(prompt: str, session_id: str = "default", conversation_context: str = ""):
     """
-    Call LLM API for real AI responses; tries OpenAI first, then Gemini, then fallback.
+    Call LLM via LangChain abstraction (OpenAI → Gemini → Groq → fallback).
     Maintains conversation history to avoid repetitive responses.
     """
     # Initialize session history if needed
@@ -79,68 +79,39 @@ IMPORTANT RULES:
 
 Do not diagnose or offer professional medical advice."""
 
-    # Try OpenAI first
-    if OPENAI_API_KEY:
-        try:
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            # Add conversation context if provided
-            if conversation_context:
-                messages.append({"role": "system", "content": f"Recent conversation context: {conversation_context}"})
-            messages.extend(conversation_history[session_id])
-            
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 150
-            }
-            
-            response = requests.post(OPENAI_URL, json=payload, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                assistant_message = data["choices"][0]["message"]["content"]
-                # Add to history
-                conversation_history[session_id].append({"role": "assistant", "content": assistant_message})
-                return assistant_message
-        except Exception as e:
-            _LOG = CustomLogger().get_logger(__name__)
-            _LOG.warning("OpenAI call failed, trying Gemini", error=str(e))
-
-    # Try Gemini as fallback
-    if GEMINI_API_KEY:
-        try:
-            payload = {
-                "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-                "contents": [
-                    {"role": "user", "parts": [{"text": msg["content"]}]} 
-                    if msg["role"] == "user" 
-                    else {"role": "model", "parts": [{"text": msg["content"]}]}
-                    for msg in conversation_history[session_id]
-                ]
-            }
-            
-            response = requests.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                json=payload,
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                assistant_message = data["candidates"][0]["content"]["parts"][0]["text"]
-                conversation_history[session_id].append({"role": "assistant", "content": assistant_message})
-                return assistant_message
-        except Exception as e:
-            _LOG = CustomLogger().get_logger(__name__)
-            _LOG.warning("Gemini call failed, using fallback", error=str(e))
+    # Try LangChain LLM abstraction
+    try:
+        llm = ModelLoader().load_llm()
+        
+        # Build messages for LangChain
+        messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        
+        if conversation_context:
+            messages.append(SystemMessage(content=f"Recent conversation context: {conversation_context}"))
+        
+        # Add conversation history
+        for msg in conversation_history[session_id][:-1]:  # Exclude last user msg (already added below)
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            else:
+                messages.append(AIMessage(content=msg["content"]))
+        
+        # Add current prompt
+        messages.append(HumanMessage(content=prompt))
+        
+        # Invoke LLM
+        response = llm.invoke(messages)
+        assistant_message = getattr(response, "content", None) or str(response)
+        assistant_message = (assistant_message or "").strip()
+        
+        if assistant_message:
+            conversation_history[session_id].append({"role": "assistant", "content": assistant_message})
+            return assistant_message
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.warning("LangChain LLM call failed, using fallback", error=str(e))
     
-    # Smart fallback if no API keys work
+    # Smart fallback if LLM fails
     assistant_message = generate_contextual_fallback(prompt, conversation_history[session_id])
     conversation_history[session_id].append({"role": "assistant", "content": assistant_message})
     return assistant_message
@@ -248,10 +219,7 @@ async def health():
 async def collab_rewrite(request: Request):
     """
     Rewrite collaborative messages to be assertive, kind, and specific.
-    Uses OpenAI-first LLM via ModelLoader and the collab_rewrite prompt.
-
-    Request JSON: {"text": str, "style": str? (optional), "intent": str? (optional)}
-    Response JSON: {"rewrittenText": str}
+    Uses OpenAI-first LLM via ModelLoader and the collab_rewrite prompt
     """
     try:
         payload = await request.json()
@@ -657,27 +625,6 @@ async def safety_check(request: Request) -> SafetyCheckResponse:
 async def analyze_image(request: Request) -> ImageAnalysisResponse:
     """
     Analyze an image using vision AI.
-    
-    Request body:
-        image_input: str (URL or base64-encoded image)
-        input_type: str = "url" ("url" or "base64")
-        task: str = "emotion" ("emotion", "scene", or "text")
-        provider: str = "gemini" ("gemini" or "hf")
-    
-    Response:
-        labels: List[str] (detected concepts/emotions)
-        confidence: List[float] (corresponding confidence scores)
-        metadata: Dict[str, Any] (provider, timestamp, source)
-    
-    Example curl:
-        curl -X POST http://localhost:8000/api/vision/analyze \\
-          -H "Content-Type: application/json" \\
-          -d '{
-            "image_input": "https://example.com/image.jpg",
-            "input_type": "url",
-            "task": "emotion",
-            "provider": "gemini"
-          }'
     """
     _log = CustomLogger().get_logger(__name__)
     
@@ -1477,6 +1424,37 @@ async def weekly_review_endpoint(request: Request):
         _LOG.error("Weekly review failed", error=str(e))
         raise HTTPException(status_code=500, detail="Weekly review failed")
 
+
+@app.post("/api/safety/event")
+async def create_crisis_event(request: Request):
+    """
+    Persist a new crisis event (risk detection) to MongoDB.
+    """
+    try:
+        payload = await request.json()
+        event = CrisisEvent(**payload)
+        mongo = get_mongo()
+        event_data = event.dict()
+        event_id = mongo.add_crisis_event(event_data)
+        return {"event_id": event_id}
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("create_crisis_event failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to persist crisis event")
+
+@app.get("/api/safety/events")
+async def list_crisis_events(user_id: Optional[str] = None, status: Optional[str] = None, risk_band: Optional[str] = None, limit: int = 50):
+    """
+    List crisis events, optionally filtered by user_id, status, and/or risk_band.
+    """
+    try:
+        mongo = get_mongo()
+        events = mongo.list_crisis_events(user_id=user_id, status=status, risk_band=risk_band, limit=limit)
+        return {"events": events}
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("list_crisis_events failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list crisis events")
 
 @app.post("/api/alerts/test")
 async def test_alert(request: Request):

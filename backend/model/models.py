@@ -144,9 +144,35 @@ class SafetyCheckRequest(BaseModel):
     text: str
 
 
+
 class SafetyCheckResponse(BaseModel):
     label: SafetyLabel
+    risk_score: Optional[int] = None
+    risk_band: Optional[str] = None
+    signals: Optional[Dict[str, Any]] = None
+    policy_message: Optional[str] = None
     message: Optional[str] = None
+
+
+# Crisis event persistence model
+class CrisisEventStatus(str, Enum):
+    TRIGGERED = "triggered"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+
+class CrisisEvent(BaseModel):
+    event_id: Optional[str] = None
+    user_id: str
+    session_id: Optional[str] = None
+    text: str
+    risk_score: int
+    risk_band: str
+    label: SafetyLabel
+    signals: Dict[str, Any]
+    policy_message: str
+    status: CrisisEventStatus = CrisisEventStatus.TRIGGERED
+    resolution_steps: Optional[List[Dict[str, Any]]] = None  # step, actor, timestamp
+    timestamp: Optional[datetime] = None
 
 class ImageAnalysisRequest(BaseModel):
     image_input: str
