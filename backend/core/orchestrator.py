@@ -599,7 +599,7 @@ class Orchestrator:
         try:
             # Sentiment analysis
             sentiment = self.sentiment_agent.analyze(message, session_id, user_id)
-            
+
             # Crisis check
             crisis = self.crisis_agent.evaluate(
                 session_id=session_id,
@@ -607,33 +607,53 @@ class Orchestrator:
                 latest_score=sentiment["zscore"],
                 text=message
             )
-            
+
             # Retrieval
             context = self.context_agent.retrieve(
                 query=message,
                 session_id=session_id
             )
-            
+
+
             # Generate response based on mode
             if mode == "weekly":
                 response = self.insight_agent.weekly_review(session_id=session_id)
             else:
                 # Determine facet from sentiment
                 facet = self._select_facet(sentiment["scores"])
-                response = self.insight_agent.coach(
-                    message=message,
-                    context=context["passages"],
-                    session_id=session_id,
-                    facet=facet
-                )
-                response["citations"] = context["citations"]
-            
+                # If retrieval confidence is low, switch to supportive fallback mode
+                if context["confidence"] < 0.4:
+                    response = {
+                        "text": "I'm here to support you. While I couldn't find specific information, let's focus on how you're feeling and what might help you today.",
+                        "tasks": [
+                            "Take a moment to notice your breath.",
+                            "Write down one thing you're grateful for."
+                        ],
+                        "citations": [],
+                        "why": "Fallback supportive mode: low confidence in retrieved knowledge."
+                    }
+                else:
+                    response = self.insight_agent.coach(
+                        message=message,
+                        context=context["passages"],
+                        session_id=session_id,
+                        facet=facet
+                    )
+                    # Enforce citation guardrails
+                    if context["citations"]:
+                        response["citations"] = context["citations"]
+                    else:
+                        # No citations available, must state general EI principles
+                        response["citations"] = []
+                        if response.get("text"):
+                            response["text"] += "\n\n(Based on general EI principles)"
+
             return {
                 **response,
                 "sentiment": sentiment,
                 "crisis_check": crisis
             }
-            
+
         except Exception as e:
             self.log.error("Orchestration failed", error=str(e))
             return {

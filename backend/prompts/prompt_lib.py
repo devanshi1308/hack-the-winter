@@ -40,7 +40,9 @@ contextualize_question_prompt = ChatPromptTemplate.from_messages([
 
 context_qa_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You answer strictly from the provided context. If the answer is not in context, reply with \"I don't know.\" "
+     "You answer strictly from the provided context. If the answer is not in context, reply with 'I don't know.' "
+     "All answers must include JSON citations if any factual information is provided. "
+     "If no context is available or confidence is low, use a supportive, non-factual tone and state 'Based on general EI principles.' "
      "Keep answers concise (≤3 sentences).\n\nContext:\n{context}"),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
@@ -210,8 +212,14 @@ citation_guardrails_prompt = ChatPromptTemplate.from_template(
 - ALWAYS cite when using information from retrieved sources
 - Include: source_id, url, title, relevant_span (character range)
 - Format: [Source: Title](url) after relevant sentences
-- If no sources available, explicitly state "Based on general EI principles"
+- If no sources available, explicitly state 'Based on general EI principles' in the response
 - Minimum 1 citation per response when sources exist
+- All output must be STRICT JSON with keys:
+    - validated_response: response with proper citations and fallback statement if no sources
+    - citations: array of { source_id, url, title, span }
+    - warnings: array of missing citations if any
+
+If confidence is low, ensure the response is supportive and non-factual.
 
 Response to validate:
 {response}
@@ -219,10 +227,7 @@ Response to validate:
 Available sources:
 {sources_json}
 
-Return JSON with:
-- validated_response: response with proper citations
-- citations: array of {{ source_id, url, title, span }}
-- warnings: array of missing citations if any
+Return JSON only.
 """.strip()
 )
 
@@ -314,6 +319,7 @@ Scene analysis:
 {image_context}
 """.strip()
 )
+
 
 vision_text_recognition_prompt = ChatPromptTemplate.from_template(
     """You are an OCR expert. Extract and recognize all visible text in this image.
