@@ -4,7 +4,9 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/ui/theme-provider"
 import { NavbarComponent } from "@/components/ui/NavbarComponent"
 import { Spotlight } from "@/components/ui/spotlight-new"
-import Footer from "@/components/footer"
+import Footer from "@/components/footer";
+
+
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,13 +30,22 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <Spotlight />
-          <NavbarComponent />
-          {children}
-          <Footer />
-        </ThemeProvider>
+      
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+      <ThemeProvider
+      attribute="class"
+      defaultTheme="system"
+      enableSystem
+      disableTransitionOnChange
+    >
+      <Spotlight />
+      <NavbarComponent />
+      
+        {children}
+      <Footer />
+      </ThemeProvider>
       </body>
     </html>
   )
