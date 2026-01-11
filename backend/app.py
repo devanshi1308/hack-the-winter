@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 import json
 import os
 from typing import List, Optional
@@ -20,6 +20,7 @@ from utils.web_search import WebSearch
 from core.safety_checker import classify_risk, escalation_message
 from core.orchestrator import Orchestrator
 from core.memory import MemoryManager
+from core.analytics import get_activation_stats, get_retention_stats, get_helpfulness_stats, get_safety_stats
 from model.models import (
     BaselineRequest, BaselineResponse, BaselineScores,
     SafetyCheckRequest, SafetyCheckResponse, SafetyLabel,
@@ -66,18 +67,18 @@ async def call_llm(prompt: str, session_id: str = "default", conversation_contex
     if len(conversation_history[session_id]) > 10:
         conversation_history[session_id] = conversation_history[session_id][-10:]
 
-    SYSTEM_PROMPT = """You are 'Aura', a compassionate and non-judgmental AI emotional wellness companion. 
-Your role is to listen empathetically, validate the user's feelings, and offer reflective questions or gentle coping suggestions.
+    SYSTEM_PROMPT = """You are 'RaAI', a compassionate and non-judgmental AI emotional wellness companion. 
+    Your role is to listen empathetically, validate the user's feelings, and offer reflective questions or gentle coping suggestions.
 
-IMPORTANT RULES:
-1. Never repeat the same question or response pattern twice in a row
-2. Build on the conversation - reference what the user just said
-3. Ask specific follow-up questions based on their actual words
-4. Vary your response style - don't always ask "What part feels heaviest?"
-5. Show you're truly listening by addressing their specific emotion or situation
-6. Keep responses under 50 words, supportive and focused
+    IMPORTANT RULES:
+    1. Never repeat the same question or response pattern twice in a row
+    2. Build on the conversation - reference what the user just said
+    3. Ask specific follow-up questions based on their actual words
+    4. Vary your response style - don't always ask "What part feels heaviest?"
+    5. Show you're truly listening by addressing their specific emotion or situation
+    6. Keep responses under 50 words, supportive and focused
 
-Do not diagnose or offer professional medical advice."""
+    Do not diagnose or offer professional medical advice."""
 
     # Try LangChain LLM abstraction
     try:
@@ -291,6 +292,136 @@ async def submit_checkin(request: Request):
         "zscore": 0.0,
         "flag": "SAFE"
     }
+
+@app.get("/api/analytics/activation")
+async def analytics_activation(days: int = Query(default=30, ge=1, le=365)):
+    """
+    Get activation analytics (unique users activated in last N days).
+    
+    Query params:
+        days: Number of days to look back (default: 30, max: 365)
+    
+    Returns:
+        {
+            "activated_users": int,
+            "since": str (ISO datetime),
+            "days": int
+        }
+    """
+    try:
+        return get_activation_stats(days=days)
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("Analytics activation failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get activation stats")
+
+
+@app.get("/api/analytics/retention")
+async def analytics_retention(days: int = Query(default=30, ge=1, le=365)):
+    """
+    Get retention analytics (users active in last N days).
+    
+    Query params:
+        days: Number of days to look back (default: 30, max: 365)
+    
+    Returns:
+        {
+            "retained_users": int,
+            "active_sessions": int,
+            "since": str (ISO datetime),
+            "days": int
+        }
+    """
+    try:
+        return get_retention_stats(days=days)
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("Analytics retention failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get retention stats")
+
+
+@app.get("/api/analytics/helpfulness")
+async def analytics_helpfulness(days: int = Query(default=30, ge=1, le=365)):
+    """
+    Get helpfulness analytics (positive feedback in last N days).
+    
+    Query params:
+        days: Number of days to look back (default: 30, max: 365)
+    
+    Returns:
+        {
+            "helpful_feedback": int,
+            "total_feedback": int,
+            "helpfulness_rate": float (0-1),
+            "since": str (ISO datetime),
+            "days": int
+        }
+    """
+    try:
+        return get_helpfulness_stats(days=days)
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("Analytics helpfulness failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get helpfulness stats")
+
+
+@app.get("/api/analytics/safety")
+async def analytics_safety(days: int = Query(default=30, ge=1, le=365)):
+    """
+    Get safety analytics (crisis events in last N days).
+    
+    Query params:
+        days: Number of days to look back (default: 30, max: 365)
+    
+    Returns:
+        {
+            "total_events": int,
+            "by_status": {triggered: int, acknowledged: int, resolved: int},
+            "by_risk_band": {green: int, yellow: int, red: int},
+            "since": str (ISO datetime),
+            "days": int
+        }
+    """
+    try:
+        return get_safety_stats(days=days)
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("Analytics safety failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get safety stats")
+
+
+@app.get("/api/analytics/summary")
+async def analytics_summary(days: int = Query(default=30, ge=1, le=365)):
+    """
+    Get comprehensive analytics summary combining all metrics.
+    
+    Query params:
+        days: Number of days to look back (default: 30, max: 365)
+    
+    Returns:
+        {
+            "activation": {...},
+            "retention": {...},
+            "helpfulness": {...},
+            "safety": {...},
+            "period": {days: int, since: str}
+        }
+    """
+    try:
+        return {
+            "activation": get_activation_stats(days=days),
+            "retention": get_retention_stats(days=days),
+            "helpfulness": get_helpfulness_stats(days=days),
+            "safety": get_safety_stats(days=days),
+            "period": {
+                "days": days,
+                "since": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            }
+        }
+    except Exception as e:
+        _LOG = CustomLogger().get_logger(__name__)
+        _LOG.error("Analytics summary failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get analytics summary")
 
 @app.post("/ai/analyze-entry")
 async def analyze_entry(request: Request):
@@ -535,11 +666,11 @@ async def chat_mood(request: Request):
     
     # Real AI chat response with conversation history
     chat_prompt = f"""The user is sharing their emotional state. Respond with empathy and understanding.
-Keep under 50 words. Build on what they just said - don't repeat yourself.
+    Keep under 50 words. Build on what they just said - don't repeat yourself.
 
-User says: "{message}"
+    User says: "{message}"
 
-Your supportive response:"""
+    Your supportive response:"""
     
     response = await call_llm(chat_prompt, session_id=session_id, conversation_context=conversation_context)
     
@@ -868,7 +999,7 @@ async def get_exercise(request: Request):
     exercise_data["source_doc_id"] = "ai_generated"
     return {"exercise": exercise_data}
 
-# ==================== AGENTIC RAG QUERY ====================
+#  AGENTIC RAG QUERY 
 
 @app.post("/rag/exercise")
 async def rag_exercise(request: Request):
@@ -973,7 +1104,7 @@ async def rag_exercise(request: Request):
     }
 
 
-# ==================== AGENTIC WEB-AUGMENTED RAG ====================
+#  AGENTIC WEB-AUGMENTED RAG 
 
 @app.post("/agent/exercise")
 async def agent_exercise(request: Request):
@@ -1082,7 +1213,7 @@ async def agent_exercise(request: Request):
         "offline": offline,
     }
 
-# ==================== SESSIONS & MESSAGES API ====================
+#  SESSIONS & MESSAGES API 
 
 _LOG = CustomLogger().get_logger(__name__)
 
@@ -1193,7 +1324,7 @@ async def analytics_series(user_id: Optional[str] = None, days: int = 30):
         _LOG.error("analytics_series failed", error=str(e))
         return {"series": [], "offline": True}
 
-# ==================== TTS/STT ENDPOINTS ====================
+#  TTS/STT ENDPOINTS 
 
 @app.post("/api/tts")
 async def text_to_speech(request: Request):
@@ -1267,7 +1398,7 @@ async def list_voices():
     return {"voices": voices}
 
 
-# ==================== ADAPTIVE CHAT WITH ORCHESTRATOR ====================
+#  ADAPTIVE CHAT WITH ORCHESTRATOR 
 
 # Initialize orchestrator
 orchestrator = Orchestrator()
