@@ -30,8 +30,16 @@ from db.mongo import get_mongo
 from logger.custom_logger import CustomLogger
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from utils.cache import TTLCache
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import os
+from fastapi.responses import JSONResponse
+
 # Load environment variables from .env (local dev)
 load_dotenv()
+
 
 app = FastAPI()
 
@@ -50,6 +58,37 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "
 
 # Conversation history per session
 conversation_history = {}
+
+
+# Initialize in-memory cache for session-based retrieval
+# TTL: 60 seconds for fast-changing data, 300 seconds for stable data
+retrieval_cache = TTLCache(ttl_seconds=60)
+exercise_cache = TTLCache(ttl_seconds=300)  # Exercises change less frequently
+
+# Initialize rate limiter (no default, per-endpoint only)
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
+app.state.limiter = limiter
+
+# Add rate limit exceeded exception handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please wait before trying again.",
+            "retry_after": exc.detail
+        }
+    )
+
+
+# Helper for cache key generation
+def get_cache_key(prefix: str, **kwargs) -> str:
+    parts = [prefix]
+    for k, v in sorted(kwargs.items()):
+        parts.append(f"{k}={v}")
+    return ":".join(parts)
+
 
 async def call_llm(prompt: str, session_id: str = "default", conversation_context: str = ""):
     """
@@ -743,34 +782,58 @@ async def score_baseline(request: Request) -> BaselineResponse:
     )
     return resp
 
+
+# Example 1: Safety Check (Heavy endpoint)
 @app.post("/ai/safety-check")
+@limiter.limit("1/10seconds")  # 1 request per 10 seconds
 async def safety_check(request: Request) -> SafetyCheckResponse:
+    """Safety check with rate limiting."""
     payload = await request.json()
     req = SafetyCheckRequest(**payload)
-    risk = classify_risk(req.text, llm=None)  # allow fallback without keys
+    cache_key = get_cache_key("safety", text=req.text[:100])
+    cached = retrieval_cache.get(cache_key)
+    if cached:
+        CustomLogger().get_logger(__name__).info("Safety check cache hit", cache_key=cache_key)
+        return SafetyCheckResponse(**cached)
+    risk = classify_risk(req.text, llm=None)
     label = SafetyLabel(risk.get("label", "SAFE"))
     message = escalation_message() if label == SafetyLabel.ESCALATE else None
-    return SafetyCheckResponse(label=label, message=message)
+    result = SafetyCheckResponse(
+        label=label,
+        risk_score=risk.get("risk_score"),
+        risk_band=risk.get("risk_band"),
+        signals=risk.get("signals"),
+        policy_message=risk.get("policy_message"),
+        message=message
+    )
+    if label == SafetyLabel.SAFE:
+        retrieval_cache.set(cache_key, result.dict())
+    return result
 
+
+# Example 2: Vision Analysis (Very heavy endpoint)
 @app.post("/api/vision/analyze")
+@limiter.limit("1/10seconds")
 async def analyze_image(request: Request) -> ImageAnalysisResponse:
-    """
-    Analyze an image using vision AI.
-    """
+    """Vision analysis with rate limiting and caching."""
     _log = CustomLogger().get_logger(__name__)
-    
     try:
         payload = await request.json()
     except Exception as e:
         _log.error("Invalid JSON body", error=str(e))
         raise HTTPException(status_code=400, detail="Invalid JSON body")
-    
     try:
         req = ImageAnalysisRequest(**payload)
     except Exception as e:
         _log.error("Invalid request schema", error=str(e))
         raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-    
+    # Check cache for URL-based requests
+    if req.input_type == "url":
+        cache_key = get_cache_key("vision", url=req.image_input, task=req.task)
+        cached = retrieval_cache.get(cache_key)
+        if cached:
+            _log.info("Vision analysis cache hit", cache_key=cache_key)
+            return ImageAnalysisResponse(**cached)
     try:
         # Basic validation for URL reachability if applicable
         if req.input_type == "url":
@@ -782,14 +845,12 @@ async def analyze_image(request: Request) -> ImageAnalysisResponse:
             except HTTPException:
                 raise
             except Exception:
-                # If HEAD fails, try GET small download to validate
                 try:
                     r = _req.get(req.image_input, timeout=8, stream=True)
                     if r.status_code >= 400:
                         raise HTTPException(status_code=400, detail="Image URL not reachable")
                 except Exception:
                     raise HTTPException(status_code=400, detail="Invalid or unreachable image URL")
-
         loader = ModelLoader()
         vision_provider = loader.load_vision_model(provider=req.provider)
         result = vision_provider.analyze(
@@ -797,17 +858,15 @@ async def analyze_image(request: Request) -> ImageAnalysisResponse:
             input_type=req.input_type,
             task=req.task
         )
-        
-        # Add timestamp to metadata
         from datetime import datetime
         result["metadata"]["timestamp"] = datetime.utcnow().isoformat()
-        
         _log.info("Vision analysis completed", task=req.task, provider=req.provider, labels_count=len(result.get("labels", [])))
-        return ImageAnalysisResponse(**result)
-    
+        response = ImageAnalysisResponse(**result)
+        if req.input_type == "url":
+            retrieval_cache.set(cache_key, response.dict())
+        return response
     except Exception as e:
         _log.error("Vision analysis failed", error=str(e), task=req.task, provider=req.provider)
-        # Return fallback response
         return ImageAnalysisResponse(
             labels=["neutral"],
             confidence=[0.5],
@@ -818,6 +877,217 @@ async def analyze_image(request: Request) -> ImageAnalysisResponse:
                 "task": req.task
             }
         )
+# Example 3: RAG Exercise (Heavy endpoint with longer cache)
+@app.post("/rag/exercise")
+@limiter.limit("2/10seconds")  # Slightly more lenient
+async def rag_exercise(request: Request):
+    """RAG exercise with caching."""
+    payload = await request.json()
+    user_id = payload.get("user_id")
+    session_id = payload.get("session_id")
+    target_facets = payload.get("target_facets", [])
+    context_tags = payload.get("context_tags", [])
+    duration_hint = payload.get("duration_hint", "3 minutes")
+    query = payload.get("query")
+
+    # Check cache
+    if query:
+        cache_key = get_cache_key(
+            "exercise",
+            query=query[:100],
+            facets=":".join(sorted(target_facets)),
+            tags=":".join(sorted(context_tags))
+        )
+        cached = exercise_cache.get(cache_key)
+        if cached:
+            CustomLogger().get_logger(__name__).info("Exercise cache hit", cache_key=cache_key)
+            return cached
+
+    retriever_ready = False
+    offline = False
+    chunks: List[str] = []
+    try:
+        rag = ConversationalRAG(faiss_dir="rag/vectorstore")
+        try:
+            retriever = rag.load_retriever_from_faiss()
+            retriever_ready = True
+        except Exception:
+            offline = True
+            retriever = None
+    except Exception:
+        offline = True
+        retriever = None
+    if not query:
+        query_parts = target_facets + context_tags + [duration_hint, "exercise"]
+        query = " ".join([p for p in query_parts if p]) or "emotional intelligence exercise"
+    if retriever_ready and retriever is not None:
+        try:
+            chunks = rag.search(retriever, query, k=5)
+        except Exception:
+            offline = True
+            chunks = []
+    exercise = rag.synthesize_exercise(chunks, target_facets, context_tags, duration_hint)
+    exercise = prepare_recommendation(exercise)
+    try:
+        if user_id and session_id:
+            mongo = get_mongo()
+            mongo.add_message({
+                "session_id": session_id,
+                "user_id": user_id,
+                "role": "user",
+                "content": query,
+                "metadata": {
+                    "source": "rag",
+                    "target_facets": target_facets,
+                    "context_tags": context_tags,
+                    "duration_hint": duration_hint,
+                },
+            })
+            summary = f"{exercise.get('title', 'Exercise')} — first steps: "
+            steps = exercise.get("steps", [])
+            if isinstance(steps, list) and steps:
+                preview = "; ".join(steps[:3])
+                summary += preview
+            mongo.add_message({
+                "session_id": session_id,
+                "user_id": user_id,
+                "role": "assistant",
+                "content": summary,
+                "metadata": {
+                    "source": "rag",
+                    "chunks_found": len(chunks),
+                    "retriever_ready": retriever_ready,
+                },
+            })
+    except Exception:
+        pass
+    result = {
+        "exercise": exercise,
+        "chunks": chunks,
+        "retriever_ready": retriever_ready,
+        "offline": offline,
+    }
+    if query:
+        exercise_cache.set(cache_key, result)
+    return result
+# Example 4: Adaptive Chat (Moderate rate limit)
+@app.post("/api/chat/{session_id}")
+@limiter.limit("3/10seconds")  # 3 requests per 10 seconds for chat
+async def adaptive_chat(session_id: str, request: Request):
+    """Adaptive chat with moderate rate limiting."""
+    payload = await request.json()
+    message = payload.get("message", "")
+    user_id = payload.get("user_id")
+    mode = payload.get("mode", "qa")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    cache_key = get_cache_key("chat", session_id=session_id, message=message[:50])
+    cached = retrieval_cache.get(cache_key)
+    if cached:
+        CustomLogger().get_logger(__name__).info("Chat cache hit", session_id=session_id)
+        return cached
+    try:
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
+        memory.initialize()
+        result = orchestrator.process_message(
+            message=message,
+            session_id=session_id,
+            user_id=user_id,
+            mode=mode
+        )
+        memory.save_interaction(
+            user_message=message,
+            assistant_reply=result.get("text", ""),
+            tags=[mode]
+        )
+        audio_url = None
+        if payload.get("generate_audio"):
+            try:
+                tts_client = get_elevenlabs()
+                audio_bytes = tts_client.text_to_speech(result["text"])
+                audio_url = "data:audio/mp3;base64,..."
+            except Exception:
+                pass
+        try:
+            mongo = get_mongo()
+            sentiment_val = result.get("sentiment")
+            if isinstance(sentiment_val, (int, float)):
+                mood_index = max(0.0, min(100.0, ((float(sentiment_val) + 1.0) / 2.0) * 100.0))
+            else:
+                txt = (message or "").lower()
+                mood_index = 50
+                pos = ["happy", "good", "great", "calm", "okay", "fine"]
+                neg = ["sad", "bad", "angry", "upset", "stressed", "anxious", "pissed"]
+                mood_index += 10 if any(w in txt for w in pos) else 0
+                mood_index -= 10 if any(w in txt for w in neg) else 0
+                mood_index = max(0, min(100, mood_index))
+            if user_id and session_id:
+                mongo.add_message({
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "role": "user",
+                    "content": message,
+                    "metadata": {"source": "agentic_chat", "mood_index": mood_index},
+                })
+                mongo.add_message({
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "role": "assistant",
+                    "content": result.get("text", ""),
+                    "metadata": {"source": "agentic_chat", "mood_index": mood_index},
+                })
+        except Exception:
+            pass
+        response = {
+            "text": result.get("text"),
+            "citations": result.get("citations", []),
+            "tasks": result.get("tasks", []),
+            "why": result.get("why"),
+            "audio_url": audio_url,
+            "sentiment": result.get("sentiment"),
+            "crisis_check": result.get("crisis_check")
+        }
+        retrieval_cache.set(cache_key, response)
+        return response
+    except Exception as e:
+        CustomLogger().get_logger(__name__).error("Adaptive chat failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Chat processing failed")
+# ===== CACHE MANAGEMENT ENDPOINTS (Optional - for admin) =====
+
+from datetime import datetime, timezone
+
+@app.post("/api/admin/cache/clear")
+async def clear_cache(cache_type: str = "all"):
+    """
+    Clear cache (admin only).
+    Args:
+        cache_type: "retrieval", "exercise", or "all"
+    """
+    # TODO: Add admin authentication
+    if cache_type in ["retrieval", "all"]:
+        retrieval_cache.clear()
+    if cache_type in ["exercise", "all"]:
+        exercise_cache.clear()
+    return {
+        "status": "success",
+        "cache_cleared": cache_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/api/admin/cache/stats")
+async def cache_stats():
+    """Get cache statistics (admin only)."""
+    # TODO: Add admin authentication
+    return {
+        "retrieval_cache": {
+            "size": retrieval_cache.size(),
+            "ttl_seconds": retrieval_cache.ttl
+        },
+        "exercise_cache": {
+            "size": exercise_cache.size(),
+            "ttl_seconds": exercise_cache.ttl
+        }
+    }
 
 # RAG ENDPOINTS
 @app.post("/rag/ingest")

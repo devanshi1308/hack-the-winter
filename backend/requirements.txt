@@ -40,3 +40,5 @@ elevenlabs
 openai>=1.0.0
 google-generativeai
 Pillow
+redis
+slowapi
