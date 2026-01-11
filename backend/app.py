@@ -10,6 +10,8 @@ import asyncio
 import io
 import uuid
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from passlib.context import CryptContext
 from model.models import CrisisEvent, CrisisEventStatus
 from utils.elevenlabs_client import get_elevenlabs
 from utils.model_loader import ModelLoader
@@ -29,6 +31,7 @@ from model.models import (
 from db.mongo import get_mongo
 from logger.custom_logger import CustomLogger
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from auth import create_jwt_token
 
 from utils.cache import TTLCache
 from slowapi import Limiter
@@ -42,6 +45,28 @@ load_dotenv()
 
 
 app = FastAPI()
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+# Request/Response models for auth
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user_id: str
+    email: str
+    name: str
 
 app.add_middleware(
     CORSMiddleware,
@@ -1876,6 +1901,125 @@ async def test_alert(request: Request):
     except Exception as e:
         _LOG.error("Alert test failed", error=str(e))
         return {"error": str(e)}
+
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(request: LoginRequest):
+    """Login with email and password."""
+    try:
+        mongo = get_mongo()
+        users = await mongo._db.users.find_one({"email": request.email})
+        
+        if not users:
+            _LOG.warning("Login attempt with non-existent email", email=request.email)
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid email or password"
+            )
+        
+        # Verify password
+        if not pwd_context.verify(request.password, users.get("hashed_password", "")):
+            _LOG.warning("Login attempt with wrong password", email=request.email)
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid email or password"
+            )
+        
+        # Update last login
+        await mongo._db.users.update_one(
+            {"_id": users["_id"]},
+            {"$set": {"last_login": datetime.now(timezone.utc)}}
+        )
+        
+        # Create JWT token
+        token = create_jwt_token(users)
+        
+        _LOG.info("User logged in successfully", email=request.email, user_id=str(users["_id"]))
+        
+        return AuthResponse(
+            token=token,
+            user_id=str(users["_id"]),
+            email=users["email"],
+            name=users.get("name", "")
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        _LOG.error("Login failed", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Login failed. Please try again."
+        )
+
+
+@app.post("/api/auth/signup", response_model=AuthResponse)
+async def signup(request: SignupRequest):
+    """Signup with email and password."""
+    try:
+        mongo = get_mongo()
+        
+        # Validate input
+        if not request.email or not request.password or not request.name:
+            raise HTTPException(
+                status_code=400,
+                detail="Email, password, and name are required"
+            )
+        
+        if len(request.password) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail="Password must be at least 8 characters"
+            )
+        
+        # Check if user exists
+        existing_user = await mongo._db.users.find_one({"email": request.email})
+        if existing_user:
+            _LOG.warning("Signup attempt with existing email", email=request.email)
+            raise HTTPException(
+                status_code=409,
+                detail="Email already registered"
+            )
+        
+        # Create new user
+        user_doc = {
+            "email": request.email,
+            "name": request.name,
+            "hashed_password": pwd_context.hash(request.password),
+            "role": "individual",
+            "created_at": datetime.now(timezone.utc),
+            "last_login": datetime.now(timezone.utc),
+            "preferences": {},
+            "metadata": {}
+        }
+        
+        result = await mongo._db.users.insert_one(user_doc)
+        user_doc["_id"] = result.inserted_id
+        
+        # Create JWT token
+        token = create_jwt_token(user_doc)
+        
+        _LOG.info("New user created successfully", email=request.email, user_id=str(result.inserted_id))
+        
+        return AuthResponse(
+            token=token,
+            user_id=str(result.inserted_id),
+            email=user_doc["email"],
+            name=user_doc["name"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        _LOG.error("Signup failed", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Signup failed. Please try again."
+        )
 
 
 if __name__ == "__main__":
