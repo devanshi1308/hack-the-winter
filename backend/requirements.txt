@@ -21,6 +21,7 @@ motor
 pymongo
 authlib
 python-jose[cryptography]
+passlib[bcrypt]
 scikit-learn
 numpy
 jwt
