@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-Ingest RAG documents from backend/data/rag_docs into FAISS vector store.
-Run this script to populate the RAG knowledge base with emotional wellness PDFs.
-
-Usage:
-    python ingest_rag_docs.py
-"""
-
 import os
 import sys
 from pathlib import Path
