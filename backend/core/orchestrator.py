@@ -19,7 +19,11 @@ from utils.model_loader import ModelLoader
 
 try:
     from langchain_community.document_loaders import WebBaseLoader, YoutubeLoader
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_text_splitters import (
+        RecursiveCharacterTextSplitter,
+        HTMLHeaderTextSplitter,
+        MarkdownHeaderTextSplitter,
+    )
     from langchain_community.retrievers import BM25Retriever
     from langchain_core.documents import Document
     _LOADERS_AVAILABLE = True
@@ -101,12 +105,77 @@ class DataAgent:
         docs_indexed = 0
         if all_documents:
             try:
-                # Chunk documents
-                text_splitter = RecursiveCharacterTextSplitter(
+                # Helper: detect content type
+                def _is_html(text: str) -> bool:
+                    t = text.lower()
+                    return ("<html" in t) or ("<h1" in t) or ("<p" in t)
+
+                def _is_markdown(text: str) -> bool:
+                    return ("\n#" in text) or text.strip().startswith("#") or ("\n## " in text)
+
+                def _infer_tags(text: str) -> List[str]:
+                    tags = [
+                        "anxiety", "grief", "stress", "depression", "mindfulness",
+                        "breathing", "sleep", "anger", "sadness", "coping", "resilience"
+                    ]
+                    lower = text.lower()
+                    return [t for t in tags if t in lower]
+
+                def _compute_reading_level(text: str) -> str:
+                    import re
+                    sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
+                    words = [w for w in re.findall(r"\b\w+\b", text)]
+                    avg_len = (len(words) / max(1, len(sentences))) if sentences else len(words)
+                    if avg_len < 12:
+                        return "basic"
+                    elif avg_len <= 20:
+                        return "intermediate"
+                    return "advanced"
+
+                # Default splitter
+                default_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=int(os.getenv("MAX_CHUNK_TOKENS", "800")),
                     chunk_overlap=200
                 )
-                chunks = text_splitter.split_documents(all_documents)
+
+                chunks = []
+                for doc in all_documents:
+                    content = doc.page_content or ""
+                    base_meta = dict(doc.metadata or {})
+                    # Apply heading-aware splitters when possible
+                    doc_chunks = []
+                    try:
+                        if _is_html(content) and 'HTMLHeaderTextSplitter' in globals():
+                            html_splitter = HTMLHeaderTextSplitter(
+                                headers_to_split_on=[
+                                    ("h1", "H1"), ("h2", "H2"), ("h3", "H3")
+                                ]
+                            )
+                            doc_chunks = html_splitter.split_text(content)
+                        elif _is_markdown(content) and 'MarkdownHeaderTextSplitter' in globals():
+                            md_splitter = MarkdownHeaderTextSplitter(
+                                headers_to_split_on=[
+                                    ("#", "H1"), ("##", "H2"), ("###", "H3")
+                                ]
+                            )
+                            doc_chunks = md_splitter.split_text(content)
+                        else:
+                            doc_chunks = default_splitter.split_documents([doc])
+                    except Exception:
+                        doc_chunks = default_splitter.split_documents([doc])
+
+                    # Enrich metadata for each chunk
+                    for c in doc_chunks:
+                        cm = dict(base_meta)
+                        cm.update(c.metadata or {})
+                        section_parts = [cm.get(k) for k in ["H1", "H2", "H3"] if cm.get(k)]
+                        section = " > ".join(section_parts) if section_parts else ""
+                        cm.update({
+                            "section": section,
+                            "tags": _infer_tags(c.page_content),
+                            "reading_level": _compute_reading_level(c.page_content),
+                        })
+                        chunks.append(Document(page_content=c.page_content, metadata=cm))
                 
                 # Index into FAISS (using existing RAG pipeline)
                 from rag.rag_pipeline import SingleDocumentIngestor
@@ -148,19 +217,43 @@ class ContextAgent:
         self.vector_retriever = None
         self.bm25_retriever = None
         self.corpus_docs = []  # In-memory corpus for BM25
-        
+        self._cross_encoder = None  # Cache cross-encoder model
         try:
             self.vector_retriever = self.rag.load_retriever_from_faiss()
             self.log.info("FAISS vector retriever loaded")
         except Exception as e:
             self.log.warning("FAISS retriever unavailable; will use fallback", error=str(e))
-        
         # Initialize BM25 with corpus if available
         if _LOADERS_AVAILABLE:
             try:
                 self._load_bm25_corpus()
             except Exception as e:
                 self.log.warning("BM25 retriever initialization failed", error=str(e))
+
+    def _rerank_with_llm(self, query: str, passages: List[str], top_k: int = 10) -> List[str]:
+        """
+        Fallback LLM-based reranking when cross-encoder unavailable.
+        Uses LLM to score relevance of each passage.
+        """
+        try:
+            llm = ModelLoader().load_llm()
+            scored_passages = []
+            for i, passage in enumerate(passages[:20]):  # Only rerank top 20
+                prompt = f"""Rate how relevant this passage is to the query on a scale of 0-10.\nQuery: {query}\nPassage: {passage[:300]}...\n\nRespond with ONLY a number from 0-10."""
+                try:
+                    response = llm.invoke(prompt)
+                    score_text = getattr(response, 'content', str(response)).strip()
+                    import re
+                    numbers = re.findall(r'\d+', score_text)
+                    score = float(numbers[0]) if numbers else 5.0
+                except Exception:
+                    score = 5.0
+                scored_passages.append((passage, score))
+            scored_passages.sort(key=lambda x: x[1], reverse=True)
+            return [p for p, s in scored_passages[:top_k]]
+        except Exception as e:
+            self.log.error("LLM reranking failed", error=str(e))
+            return passages[:top_k]
     
     def _load_bm25_corpus(self):
         """Load or build BM25 corpus from indexed documents."""
@@ -171,59 +264,98 @@ class ContextAgent:
                 # Get sample docs to build BM25 index
                 sample_query = "wellness emotional health"
                 results = self.rag.search(self.vector_retriever, sample_query, k=50)
-                
                 self.corpus_docs = [
                     Document(
                         page_content=text,
                         metadata={"source": "faiss_corpus", "index": i}
                     ) for i, text in enumerate(results)
                 ]
-                
                 if self.corpus_docs:
                     self.bm25_retriever = BM25Retriever.from_documents(self.corpus_docs)
                     self.bm25_retriever.k = 3  # Top-k for BM25
                     self.log.info("BM25 retriever initialized", corpus_size=len(self.corpus_docs))
         except Exception as e:
             self.log.warning("BM25 corpus load failed", error=str(e))
-    
+
     def retrieve(
         self,
         query: str,
         session_id: str,
         k: int = None,
         adaptive: bool = True,
-        use_hybrid: bool = True
+        use_hybrid: bool = True,
+        use_reranker: bool = True
     ) -> Dict[str, Any]:
         """
-        Hybrid retrieval (BM25 + vector) with citations.
+        Hybrid retrieval (BM25 + vector) with optional reranking.
+        Args:
+            query: Search query
+            session_id: Session context
+            k: Number of results to return
+            adaptive: Whether to adaptively increase k on low confidence
+            use_hybrid: Use hybrid BM25+vector vs vector-only
+            use_reranker: Apply reranking (cross-encoder or LLM)
         Returns: {passages: list[str], citations: list[dict], confidence: float, method: str}
         """
         k = k or int(os.getenv("RAG_TOP_K", "6"))
-        
-        passages = []
-        citations = []
+        passages: List[str] = []
+        citations: List[Dict[str, Any]] = []
         confidence = 0.5
         method = "fallback"
-        
         # Try hybrid retrieval first
         if use_hybrid and self.vector_retriever and self.bm25_retriever and _LOADERS_AVAILABLE:
             try:
                 # Get results from both retrievers
-                vector_chunks = self.rag.search(self.vector_retriever, query, k=k)
+                vector_chunks = self.rag.search(self.vector_retriever, query, k=max(10, k * 2))
                 bm25_docs = self.bm25_retriever.get_relevant_documents(query)
                 bm25_chunks = [doc.page_content for doc in bm25_docs]
-                
                 # Merge and deduplicate
                 seen = set()
                 for chunk in vector_chunks + bm25_chunks:
-                    chunk_key = chunk[:100]  # Use first 100 chars as key
+                    chunk_key = chunk[:100]
                     if chunk_key not in seen:
                         passages.append(chunk)
                         seen.add(chunk_key)
-                
+                # Apply reranking if requested and we have multiple passages
+                if use_reranker and len(passages) > 1:
+                    try:
+                        from sentence_transformers import CrossEncoder
+                        if self._cross_encoder is None:
+                            self._cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+                            self.log.info("Cross-encoder model loaded and cached")
+                        top_n = min(20, len(passages))
+                        pairs = [(query, p) for p in passages[:top_n]]
+                        scores = self._cross_encoder.predict(pairs)
+                        scored = list(zip(passages[:top_n], scores))
+                        scored.sort(key=lambda x: x[1], reverse=True)
+                        reranked_passages = [p for p, s in scored] + passages[top_n:]
+                        passages = reranked_passages[:k]
+                        method = "hybrid_bm25_vector_reranked_ce"
+                        self.log.info(
+                            "Cross-encoder reranking successful",
+                            top_n=top_n,
+                            final_k=len(passages),
+                            top_score=scores.max() if hasattr(scores, 'max') else max(scores) if scores else 0
+                        )
+                    except ImportError:
+                        self.log.warning("sentence-transformers not installed; trying LLM reranker")
+                        try:
+                            passages = self._rerank_with_llm(query, passages, top_k=k)
+                            method = "hybrid_bm25_vector_reranked_llm"
+                            self.log.info("LLM reranking successful")
+                        except Exception as e:
+                            self.log.warning("LLM reranking failed; using original order", error=str(e))
+                            passages = passages[:k]
+                            method = "hybrid_bm25_vector"
+                    except Exception as e:
+                        self.log.warning("Reranker failed; using original order", error=str(e))
+                        passages = passages[:k]
+                        method = "hybrid_bm25_vector"
+                else:
+                    passages = passages[:k]
+                    method = "hybrid_bm25_vector"
                 # Generate citations with metadata
-                for i, chunk in enumerate(passages[:k]):
-                    # Extract metadata if embedded in chunk
+                for i, chunk in enumerate(passages):
                     metadata = self._extract_metadata(chunk)
                     citations.append({
                         "source_id": metadata.get("source", f"doc_{i}"),
@@ -233,14 +365,40 @@ class ContextAgent:
                         "end": min(100, len(chunk)),
                         "snippet": chunk[:100]
                     })
-                
-                passages = passages[:k]
                 confidence = min(1.0, len(passages) / k) if passages else 0.0
-                method = "hybrid_bm25_vector"
-                self.log.info("Hybrid retrieval complete", method=method, results=len(passages))
-                
+                self.log.info("Hybrid retrieval complete", method=method, results=len(passages), confidence=confidence)
             except Exception as e:
                 self.log.error("Hybrid retrieval failed; falling back to vector-only", error=str(e))
+        # Fallback to vector-only
+        if not passages and self.vector_retriever:
+            try:
+                chunks = self.rag.search(self.vector_retriever, query, k=k)
+                passages = chunks
+                # Generate citations
+                for i, chunk in enumerate(chunks):
+                    metadata = self._extract_metadata(chunk)
+                    citations.append({
+                        "source_id": metadata.get("source", f"doc_{i}"),
+                        "url": metadata.get("url", f"internal://doc_{i}"),
+                        "title": metadata.get("title", f"Document {i}"),
+                        "start": 0,
+                        "end": min(100, len(chunk)),
+                        "snippet": chunk[:100]
+                    })
+                confidence = min(1.0, len(chunks) / k) if chunks else 0.0
+                method = "vector_only"
+            except Exception as e:
+                self.log.error("Vector retrieval failed", error=str(e))
+        # Adaptive depth: if confidence low, expand search
+        if adaptive and confidence < 0.4 and k < 12:
+            self.log.info("Low confidence; expanding search depth", current_k=k, new_k=min(12, k * 2))
+            return self.retrieve(query, session_id, k=min(12, k * 2), adaptive=False, use_hybrid=use_hybrid, use_reranker=use_reranker)
+        return {
+            "passages": passages,
+            "citations": citations,
+            "confidence": confidence,
+            "method": method
+        }
         
         # Fallback to vector-only
         if not passages and self.vector_retriever:

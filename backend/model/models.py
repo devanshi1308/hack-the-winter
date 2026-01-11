@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Literal
 
@@ -179,6 +177,112 @@ class ImageAnalysisRequest(BaseModel):
     input_type: Literal["url", "base64"] = "url"
     task: Literal["emotion", "scene", "text"] = "emotion"
     provider: Literal["gemini"] = "gemini"
+
+
+# user Profile v1 schema for personalization
+class UserTone(str, Enum):
+    """Preferred communication tone for coaching."""
+    warm = "warm"  # nurturing, empathetic
+    direct = "direct"  # straightforward, actionable
+    humorous = "humorous"  # lighthearted, uplifting
+    clinical = "clinical"  # evidence-based, technical
+    balanced = "balanced"  # mix of warmth and directness
+
+
+class CopingStyle(str, Enum):
+    """Primary coping strategy preference."""
+    reflective = "reflective"  # journal, introspect
+    actionable = "actionable"  # do something, take action
+    social = "social"  # talk to others, seek support
+    somatic = "somatic"  # physical, breath, movement
+    creative = "creative"  # art, music, expression
+
+
+class HabitFrequency(str, Enum):
+    """Frequency of habit engagement."""
+    daily = "daily"
+    several_weekly = "several_weekly"
+    weekly = "weekly"
+    occasionally = "occasionally"
+    rarely = "rarely"
+
+
+class SleepHabit(BaseModel):
+    """Sleep tracking and preferences."""
+    avg_hours_per_night: Optional[float] = None  # e.g., 7.5
+    sleep_time: Optional[str] = None  # e.g., "23:00"
+    wake_time: Optional[str] = None  # e.g., "06:30"
+    quality_rating: Optional[int] = Field(None, ge=1, le=5)  # 1-5 Likert
+    challenges: List[str] = Field(default_factory=list)  # e.g., ["insomnia", "early_waking"]
+
+
+class ExerciseHabit(BaseModel):
+    """Exercise/movement tracking and preferences."""
+    frequency: HabitFrequency = HabitFrequency.occasionally
+    preferred_types: List[str] = Field(default_factory=list)  # e.g., ["yoga", "running", "walking"]
+    duration_minutes: Optional[int] = None
+    time_of_day: Optional[str] = None  # e.g., "morning", "evening"
+
+
+class ExerciseFeedback(BaseModel):
+    """Feedback on a recommended exercise."""
+    exercise_id: str
+    thumbs_up: Optional[bool] = None  # True=liked, False=disliked
+    intensity_match: Optional[str] = None  # "too_easy", "just_right", "too_intense"
+    duration_match: Optional[str] = None  # "too_short", "just_right", "too_long"
+    relevance: Optional[str] = None  # "generic", "personalized", "life_changing"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class UserProfile(BaseModel):
+    """User Profile v1: stable traits, goals, preferences, and learned behaviors."""
+    user_id: str
+    
+    # Tone and communication preferences
+    preferred_tone: UserTone = UserTone.balanced
+    communication_pace: Optional[str] = None  # "slow", "moderate", "fast"
+    
+    # Emotional triggers and patterns
+    known_triggers: List[str] = Field(default_factory=list)  # e.g., ["social_conflict", "deadline_stress"]
+    coping_style: CopingStyle = CopingStyle.reflective
+    coping_style_alternatives: List[CopingStyle] = Field(default_factory=list)  # fallback preferences
+    
+    # Goals and intentions
+    wellness_goals: List[str] = Field(default_factory=list)  # e.g., ["reduce_anxiety", "improve_sleep"]
+    goal_facets: Dict[str, int] = Field(default_factory=dict)  # facet -> priority (1-5)
+    
+    # Habits
+    sleep_habit: SleepHabit = Field(default_factory=SleepHabit)
+    exercise_habit: ExerciseHabit = Field(default_factory=ExerciseHabit)
+    
+    # Preference learning
+    exercise_feedback_history: List[ExerciseFeedback] = Field(default_factory=list)
+    preference_vector: Optional[List[float]] = None  # Learned embeddings from feedback
+    preference_updated_at: Optional[datetime] = None
+    
+    # Profile metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity_at: Optional[datetime] = None
+
+
+class UserProfileRequest(BaseModel):
+    """Request to create or update a user profile."""
+    user_id: str
+    preferred_tone: Optional[UserTone] = None
+    communication_pace: Optional[str] = None
+    known_triggers: Optional[List[str]] = None
+    coping_style: Optional[CopingStyle] = None
+    wellness_goals: Optional[List[str]] = None
+    goal_facets: Optional[Dict[str, int]] = None
+    sleep_habit: Optional[SleepHabit] = None
+    exercise_habit: Optional[ExerciseHabit] = None
+
+
+class UserProfileResponse(BaseModel):
+    """Response containing a user's profile."""
+    profile: UserProfile
+    message: Optional[str] = None
 
 
 class ImageAnalysisResponse(BaseModel):
